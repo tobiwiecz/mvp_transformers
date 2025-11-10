@@ -559,6 +559,13 @@ class Beit3PreTrainedModel(PreTrainedModel):
 )
 class Beit3Model(Beit3PreTrainedModel):
     def __init__(self, config, add_pooling_layer=False):
+        """
+        Args:
+            config (`Beit3Config`):
+                Model configuration class with all the parameters of the model.
+            add_pooling_layer (`bool`, *optional*, defaults to `False`):
+                Whether to add a pooling layer on top of the encoder output.
+        """
         super().__init__(config)
 
         self.text_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
@@ -592,6 +599,26 @@ class Beit3Model(Beit3PreTrainedModel):
         return_dict: Optional[torch.LongTensor] = None,
     ):
         r"""
+        Args:
+            input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Indices of input sequence tokens in the vocabulary. Can be None if only pixel_values is provided.
+            pixel_values (`torch.FloatTensor` of shape `(batch_size, num_channels, height, width)`, *optional*):
+                Pixel values. Can be None if only input_ids is provided.
+            attention_mask (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Mask to avoid performing attention on padding token indices.
+            image_text_mask (`torch.FloatTensor`, *optional*):
+                Mask to control attention between image and text modalities in multimodal settings.
+            vision_masked_position (`torch.LongTensor`, *optional*):
+                Positions of masked patches in the vision input for masked image modeling.
+            past_key_values (`tuple`, *optional*):
+                Cached past key and value projection states for faster decoding.
+            output_hidden_states (`bool`, *optional*):
+                Whether to return hidden states of all layers.
+            output_attentions (`bool`, *optional*):
+                Whether to return attentions tensors of all attention layers.
+            return_dict (`bool`, *optional*):
+                Whether to return a ModelOutput instead of a plain tuple.
+
         Examples:
 
         ```python
@@ -914,6 +941,28 @@ class Beit3ForCaptioning(Beit3PreTrainedModel):
         labels: Optional[torch.LongTensor] = None,
     ):
         r"""
+        Args:
+            input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
+                Indices of input sequence tokens in the vocabulary.
+            pixel_values (`torch.FloatTensor` of shape `(batch_size, num_channels, height, width)`):
+                Pixel values of the input images.
+            attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Mask to avoid performing attention on padding token indices.
+            language_masked_pos (`torch.LongTensor`, *optional*):
+                Positions of masked tokens in the language input for masked language modeling.
+            text_len (`torch.LongTensor`, *optional*):
+                Length of the text sequence. If not provided, defaults to the size of input_ids.
+            past_key_values (`tuple`, *optional*):
+                Cached past key and value projection states for faster decoding.
+            output_hidden_states (`bool`, *optional*):
+                Whether to return hidden states of all layers.
+            output_attentions (`bool`, *optional*):
+                Whether to return attentions tensors of all attention layers.
+            return_dict (`bool`, *optional*):
+                Whether to return a ModelOutput instead of a plain tuple.
+            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Labels for computing the masked language modeling loss.
+
         Examples:
 
         ```python
@@ -1145,6 +1194,22 @@ class Beit3ForImageTextRetrieval(Beit3PreTrainedModel):
         return_dict: Optional[bool] = None,
     ) -> Union[tuple[Any], Beit3ImageTextMatchingOutput]:
         r"""
+        Args:
+            input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
+                Indices of input sequence tokens in the vocabulary.
+            pixel_values (`torch.FloatTensor` of shape `(batch_size, num_channels, height, width)`):
+                Pixel values of the input images.
+            attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Mask to avoid performing attention on padding token indices.
+            return_loss (`bool`, *optional*):
+                Whether to return the contrastive loss for image-text matching.
+            output_hidden_states (`bool`, *optional*):
+                Whether to return hidden states of all layers.
+            output_attentions (`bool`, *optional*):
+                Whether to return attentions tensors of all attention layers.
+            return_dict (`bool`, *optional*):
+                Whether to return a ModelOutput instead of a plain tuple.
+
         Examples:
 
         ```python
