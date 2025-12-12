@@ -153,11 +153,27 @@ class ViltEmbeddings(nn.Module):
         select = []
         for i, (v, nv, p) in enumerate(zip(valid_nums, non_valid_nums, pad_nums)):
             if p <= 0:
+                # Original (random) implementation:
                 valid_choice = torch.multinomial(torch.ones(v).float(), max_image_length)
                 select.append(valid_row_idx[i][valid_choice])
+
+                # Deterministic: uniformly sample across valid patches using evenly spaced indices
+                # This ensures no spatial bias - samples are distributed evenly across the image
+                #valid_choice = torch.linspace(0, v - 1, max_image_length, device=valid_row_idx[i].device).long()
+                #select.append(valid_row_idx[i][valid_choice])
             else:
+                # Original (random) implementation:
                 pad_choice = torch.multinomial(torch.ones(nv).float(), p, replacement=True)
                 select.append(torch.cat([valid_row_idx[i], non_valid_row_idx[i][pad_choice]], dim=0))
+
+                # Deterministic: take all valid patches + uniformly sample padding patches
+                #if nv > 0:
+                #    # Uniformly sample padding patches if needed
+                #    pad_choice = torch.linspace(0, nv - 1, p, device=non_valid_row_idx[i].device).long()
+                #    select.append(torch.cat([valid_row_idx[i], non_valid_row_idx[i][pad_choice]], dim=0))
+                #else:
+                #    # Edge case: no non-valid patches available, just use valid ones
+                #    select.append(valid_row_idx[i])
 
         select = torch.cat(select, dim=0)
         x = x[select[:, 0], select[:, 1]].view(batch_size, -1, num_channels)
@@ -270,8 +286,22 @@ class TextEmbeddings(nn.Module):
         if self.position_embedding_type == "absolute":
             position_embeddings = self.position_embeddings(position_ids)
             embeddings += position_embeddings
+
+        #print(f"MC embeddings: {embeddings}")
+        # save it as a torch tensor
+        #torch.save(embeddings, "mc_embeddings.pt")
+
         embeddings = self.LayerNorm(embeddings)
+
+        #print(f"MC embeddings after LayerNorm: {embeddings}")
+        # save it as a torch tensor
+        #torch.save(embeddings, "mc_embeddings_after_layernorm.pt")
+
         embeddings = self.dropout(embeddings)
+
+        #print(f"MC embeddings after Dropout: {embeddings}")
+        # save it as a torch tensor
+        #torch.save(embeddings, "mc_embeddings_after_dropout.pt")
         return embeddings
 
 
