@@ -154,26 +154,26 @@ class ViltEmbeddings(nn.Module):
         for i, (v, nv, p) in enumerate(zip(valid_nums, non_valid_nums, pad_nums)):
             if p <= 0:
                 # Original (random) implementation:
-                valid_choice = torch.multinomial(torch.ones(v).float(), max_image_length)
-                select.append(valid_row_idx[i][valid_choice])
+                #valid_choice = torch.multinomial(torch.ones(v).float(), max_image_length)
+                #select.append(valid_row_idx[i][valid_choice])
 
                 # Deterministic: uniformly sample across valid patches using evenly spaced indices
                 # This ensures no spatial bias - samples are distributed evenly across the image
-                #valid_choice = torch.linspace(0, v - 1, max_image_length, device=valid_row_idx[i].device).long()
-                #select.append(valid_row_idx[i][valid_choice])
+                valid_choice = torch.linspace(0, v - 1, max_image_length, device=valid_row_idx[i].device).long()
+                select.append(valid_row_idx[i][valid_choice])
             else:
                 # Original (random) implementation:
-                pad_choice = torch.multinomial(torch.ones(nv).float(), p, replacement=True)
-                select.append(torch.cat([valid_row_idx[i], non_valid_row_idx[i][pad_choice]], dim=0))
+                #pad_choice = torch.multinomial(torch.ones(nv).float(), p, replacement=True)
+                #select.append(torch.cat([valid_row_idx[i], non_valid_row_idx[i][pad_choice]], dim=0))
 
                 # Deterministic: take all valid patches + uniformly sample padding patches
-                #if nv > 0:
-                #    # Uniformly sample padding patches if needed
-                #    pad_choice = torch.linspace(0, nv - 1, p, device=non_valid_row_idx[i].device).long()
-                #    select.append(torch.cat([valid_row_idx[i], non_valid_row_idx[i][pad_choice]], dim=0))
-                #else:
-                #    # Edge case: no non-valid patches available, just use valid ones
-                #    select.append(valid_row_idx[i])
+                if nv > 0:
+                    # Uniformly sample padding patches if needed
+                    pad_choice = torch.linspace(0, nv - 1, p, device=non_valid_row_idx[i].device).long()
+                    select.append(torch.cat([valid_row_idx[i], non_valid_row_idx[i][pad_choice]], dim=0))
+                else:
+                    # Edge case: no non-valid patches available, just use valid ones
+                    select.append(valid_row_idx[i])
 
         select = torch.cat(select, dim=0)
         x = x[select[:, 0], select[:, 1]].view(batch_size, -1, num_channels)
