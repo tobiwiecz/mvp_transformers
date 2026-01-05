@@ -287,21 +287,9 @@ class TextEmbeddings(nn.Module):
             position_embeddings = self.position_embeddings(position_ids)
             embeddings += position_embeddings
 
-        #print(f"MC embeddings: {embeddings}")
-        # save it as a torch tensor
-        #torch.save(embeddings, "mc_embeddings.pt")
-
         embeddings = self.LayerNorm(embeddings)
-
-        #print(f"MC embeddings after LayerNorm: {embeddings}")
-        # save it as a torch tensor
-        #torch.save(embeddings, "mc_embeddings_after_layernorm.pt")
-
         embeddings = self.dropout(embeddings)
 
-        #print(f"MC embeddings after Dropout: {embeddings}")
-        # save it as a torch tensor
-        #torch.save(embeddings, "mc_embeddings_after_dropout.pt")
         return embeddings
 
 
@@ -355,7 +343,7 @@ class ViltSelfAttention(nn.Module):
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
-    def forward(self, hidden_states, attention_mask=None, head_mask=None, output_attentions=False):
+    def forward(self, hidden_states, attention_mask=None, head_mask=None, output_attentions=False, q_dot_k=None, q_mat=None, k_mat=None, v_mat=None):
         batch_size, seq_length, _ = hidden_states.shape
         query_layer = (
             self.query(hidden_states)
@@ -373,8 +361,29 @@ class ViltSelfAttention(nn.Module):
             .transpose(1, 2)
         )
 
+        key_layer = key_layer.transpose(-1, -2)
+
+        
+        if q_mat is not None:
+            query_layer = q_mat(query_layer)
+        if k_mat is not None:
+            key_layer = k_mat(key_layer)
+        if v_mat is not None:
+            value_layer = v_mat(value_layer)
+        
+
         # Take the dot product between "query" and "key" to get the raw attention scores.
-        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+        attention_scores = torch.matmul(query_layer, key_layer)
+
+        #import ipdb; ipdb.set_trace()
+
+        batch_size, num_heads, seq_len, _ = attention_scores.shape
+        mask = ~torch.eye(seq_len, dtype=torch.bool, device=attention_scores.device)
+        fully_flattened = attention_scores[:, :, mask].flatten(start_dim=1)
+
+        if q_dot_k is not None:
+            fully_flattened = q_dot_k(attention_scores[0][0])
+
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
         if attention_mask is not None:
             # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
@@ -445,8 +454,8 @@ class ViltAttention(nn.Module):
         self.attention.all_head_size = self.attention.attention_head_size * self.attention.num_attention_heads
         self.pruned_heads = self.pruned_heads.union(heads)
 
-    def forward(self, hidden_states, attention_mask=None, head_mask=None, output_attentions=False):
-        self_outputs = self.attention(hidden_states, attention_mask, head_mask, output_attentions)
+    def forward(self, hidden_states, attention_mask=None, head_mask=None, output_attentions=False, q_dot_k=None, q_mat=None, k_mat=None, v_mat=None):
+        self_outputs = self.attention(hidden_states, attention_mask, head_mask, output_attentions, q_dot_k=q_dot_k, q_mat=q_mat, k_mat=k_mat, v_mat=v_mat)
 
         attention_output = self.output(self_outputs[0], hidden_states)
 
@@ -497,12 +506,21 @@ class ViltLayer(GradientCheckpointingLayer):
         self.layernorm_before = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.layernorm_after = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
+        self.q_dot_k = nn.Identity()
+        self.q_mat = nn.Identity()
+        self.k_mat = nn.Identity()
+        self.v_mat = nn.Identity()
+
     def forward(self, hidden_states, attention_mask=None, head_mask=None, output_attentions=False):
         self_attention_outputs = self.attention(
             self.layernorm_before(hidden_states),  # in ViLT, layernorm is applied before self-attention
             attention_mask,
             head_mask,
             output_attentions=output_attentions,
+            q_dot_k=self.q_dot_k,
+            q_mat=self.q_mat,
+            k_mat=self.k_mat,
+            v_mat=self.v_mat,
         )
         attention_output = self_attention_outputs[0]
         outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
