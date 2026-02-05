@@ -282,6 +282,9 @@ class Beit3MultiheadAttention(nn.Module):
         self.inner_attn_ln = Beit3LayerNorm(config) if config.sub_layernorm else None
         self.dropout_module = nn.Dropout(config.attention_dropout)
 
+        self.use_attn_sampling = True
+        self.attn_sample_number = 64
+
     def forward(
         self,
         query: torch.Tensor,
@@ -292,40 +295,170 @@ class Beit3MultiheadAttention(nn.Module):
         image_text_attention_mask: torch.Tensor = None,
         multiway_split_position=-1,
         output_attentions: bool | None = None,
+        q_mat=None,
+        k_mat=None,
+        v_mat=None,
+        q_dot_k=None
     ):
         batch_size, target_length, embed_dim = query.size()
 
         _, src_len, _ = key.size()
 
-        query = (
-            (self.query_proj(query, split_position=multiway_split_position) * self.scaling)
-            .view(batch_size, target_length, self.num_heads, self.head_dim)
-            .transpose(1, 2)
-        )
-        key = (
-            self.key_proj(key, split_position=multiway_split_position)
-            .view(batch_size, src_len, self.num_heads, self.head_dim)
-            .transpose(1, 2)
-        )
-        value = (
-            self.value_proj(value, split_position=multiway_split_position)
-            .view(batch_size, src_len, self.num_heads, self.head_dim)
-            .transpose(1, 2)
-        )
-        query = query.reshape(batch_size * self.num_heads, target_length, self.head_dim)
-        key = key.reshape(batch_size * self.num_heads, src_len, self.head_dim)
-        value = value.reshape(batch_size * self.num_heads, src_len, self.head_dim)
+        # Previous implementation
+        if not self.use_attn_sampling or not isinstance(query.mean, torch.Tensor):
+            query = (
+                (self.query_proj(query, split_position=multiway_split_position) * self.scaling)
+                .view(batch_size, target_length, self.num_heads, self.head_dim)
+                .transpose(1, 2)
+            )
+            key = (
+                self.key_proj(key, split_position=multiway_split_position)
+                .view(batch_size, src_len, self.num_heads, self.head_dim)
+                .transpose(1, 2)
+            )
+            value = (
+                self.value_proj(value, split_position=multiway_split_position)
+                .view(batch_size, src_len, self.num_heads, self.head_dim)
+                .transpose(1, 2)
+            )
+            query = query.reshape(batch_size * self.num_heads, target_length, self.head_dim)
+            key = key.reshape(batch_size * self.num_heads, src_len, self.head_dim)
+            value = value.reshape(batch_size * self.num_heads, src_len, self.head_dim)
 
-        if past_key_values is not None:
-            prev_key = past_key_values[0].view(batch_size * self.num_heads, -1, self.head_dim)
-            prev_value = past_key_values[1].view(batch_size * self.num_heads, -1, self.head_dim)
-            key = torch.cat([prev_key, key], dim=1)
-            value = torch.cat([prev_value, value], dim=1)
-            past_key_values[0] = key.view(batch_size, self.num_heads, -1, self.head_dim)
-            past_key_values[1] = value.view(batch_size, self.num_heads, -1, self.head_dim)
-            src_len = key.size(1)
+            if past_key_values is not None:
+                prev_key = past_key_values[0].view(batch_size * self.num_heads, -1, self.head_dim)
+                prev_value = past_key_values[1].view(batch_size * self.num_heads, -1, self.head_dim)
+                key = torch.cat([prev_key, key], dim=1)
+                value = torch.cat([prev_value, value], dim=1)
+                past_key_values[0] = key.view(batch_size, self.num_heads, -1, self.head_dim)
+                past_key_values[1] = value.view(batch_size, self.num_heads, -1, self.head_dim)
+                src_len = key.size(1)
 
-        attn_weights = torch.bmm(query, key.transpose(1, 2))
+            attn_weights = torch.bmm(query, key.transpose(1, 2))
+        
+        else:
+        
+            original_hidden_states_mean = query.mean.clone()
+            original_hidden_states_var = query.var.clone()
+
+            original_query_proj_text_weight = self.query_proj.text.weight.clone()
+            original_query_proj_text_weight_var = self.query_proj.text.weight_var.clone()
+            original_query_proj_text_bias = self.query_proj.text.bias.clone()
+            original_query_proj_text_bias_var = self.query_proj.text.bias_var.clone()
+
+            original_query_proj_image_weight = self.query_proj.image.weight.clone()
+            original_query_proj_image_weight_var = self.query_proj.image.weight_var.clone()
+            original_query_proj_image_bias = self.query_proj.image.bias.clone()
+            original_query_proj_image_bias_var = self.query_proj.image.bias_var.clone()
+
+            original_key_proj_text_weight = self.key_proj.text.weight.clone()
+            original_key_proj_text_weight_var = self.key_proj.text.weight_var.clone()
+            original_key_proj_text_bias = self.key_proj.text.bias.clone()
+            original_key_proj_text_bias_var = self.key_proj.text.bias_var.clone()
+
+            original_key_proj_image_weight = self.key_proj.image.weight.clone()
+            original_key_proj_image_weight_var = self.key_proj.image.weight_var.clone()
+            original_key_proj_image_bias = self.key_proj.image.bias.clone()
+            original_key_proj_image_bias_var = self.key_proj.image.bias_var.clone()
+
+            for i in range(self.attn_sample_number):
+            
+                # Sample hidden states
+                hidden_states_sampled = (original_hidden_states_mean + torch.randn_like(original_hidden_states_mean) * torch.sqrt(original_hidden_states_var))
+
+                # also sample the query_projection weights
+                query_proj_text_weight_sampled = original_query_proj_text_weight + torch.randn_like(original_query_proj_text_weight) * torch.sqrt(original_query_proj_text_weight_var)
+                query_proj_text_bias_sampled = original_query_proj_text_bias + torch.randn_like(original_query_proj_text_bias) * torch.sqrt(original_query_proj_text_bias_var)
+                query_proj_image_weight_sampled = original_query_proj_image_weight + torch.randn_like(original_query_proj_image_weight) * torch.sqrt(original_query_proj_image_weight_var)
+                query_proj_image_bias_sampled = original_query_proj_image_bias + torch.randn_like(original_query_proj_image_bias) * torch.sqrt(original_query_proj_image_bias_var)
+
+                key_proj_text_weight_sampled = original_key_proj_text_weight + torch.randn_like(original_key_proj_text_weight) * torch.sqrt(original_key_proj_text_weight_var)
+                key_proj_text_bias_sampled = original_key_proj_text_bias + torch.randn_like(original_key_proj_text_bias) * torch.sqrt(original_key_proj_text_bias_var)
+                key_proj_image_weight_sampled = original_key_proj_image_weight + torch.randn_like(original_key_proj_image_weight) * torch.sqrt(original_key_proj_image_weight_var)
+                key_proj_image_bias_sampled = original_key_proj_image_bias + torch.randn_like(original_key_proj_image_bias) * torch.sqrt(original_key_proj_image_bias_var)
+
+                # set the sampled weights to the model
+                self.query_proj.text.weight = nn.Parameter(query_proj_text_weight_sampled)
+                self.query_proj.text.weight_var = nn.Parameter(torch.zeros_like(query_proj_text_weight_sampled))
+                self.query_proj.text.bias = nn.Parameter(query_proj_text_bias_sampled)
+                self.query_proj.text.bias_var = nn.Parameter(torch.zeros_like(query_proj_text_bias_sampled))
+
+                self.query_proj.image.weight = nn.Parameter(query_proj_image_weight_sampled)
+                self.query_proj.image.weight_var = nn.Parameter(torch.zeros_like(query_proj_image_weight_sampled))
+                self.query_proj.image.bias = nn.Parameter(query_proj_image_bias_sampled)
+                self.query_proj.image.bias_var = nn.Parameter(torch.zeros_like(query_proj_image_bias_sampled))
+
+                self.key_proj.text.weight = nn.Parameter(key_proj_text_weight_sampled)
+                self.key_proj.text.weight_var = nn.Parameter(torch.zeros_like(key_proj_text_weight_sampled))
+                self.key_proj.text.bias = nn.Parameter(key_proj_text_bias_sampled)
+                self.key_proj.text.bias_var = nn.Parameter(torch.zeros_like(key_proj_text_bias_sampled))
+
+                self.key_proj.image.weight = nn.Parameter(key_proj_image_weight_sampled)
+                self.key_proj.image.weight_var = nn.Parameter(torch.zeros_like(key_proj_image_weight_sampled))
+                self.key_proj.image.bias = nn.Parameter(key_proj_image_bias_sampled)
+                self.key_proj.image.bias_var = nn.Parameter(torch.zeros_like(key_proj_image_bias_sampled))
+
+                query = (
+                    (self.query_proj(hidden_states_sampled, split_position=multiway_split_position) * self.scaling)
+                    .view(batch_size, target_length, self.num_heads, self.head_dim)
+                    .transpose(1, 2)
+                )
+                key = (
+                    self.key_proj(hidden_states_sampled, split_position=multiway_split_position)
+                    .view(batch_size, src_len, self.num_heads, self.head_dim)
+                    .transpose(1, 2)
+                )
+
+                query = query.reshape(batch_size * self.num_heads, target_length, self.head_dim)
+                key = key.reshape(batch_size * self.num_heads, src_len, self.head_dim)
+
+                attn_weights = torch.bmm(query, key.transpose(1, 2))
+
+                # collect the attention weights across samples
+                if i == 0:
+                    attn_weights_sampled = torch.zeros(self.attn_sample_number, *attn_weights.mean.shape, device=attn_weights.device)
+
+                attn_weights_sampled[i] = attn_weights.mean
+
+            # now get the proper mean and variance of the attn weights through mean/var across samples
+            attn_weights.mean = attn_weights_sampled.mean(dim=0)
+            attn_weights.var = attn_weights_sampled.var(dim=0)
+
+            # reset the original weights
+            self.query_proj.text.weight = nn.Parameter(original_query_proj_text_weight)
+            self.query_proj.text.weight_var = nn.Parameter(original_query_proj_text_weight_var)
+            self.query_proj.text.bias = nn.Parameter(original_query_proj_text_bias)
+            self.query_proj.text.bias_var = nn.Parameter(original_query_proj_text_bias_var)
+            self.query_proj.image.weight = nn.Parameter(original_query_proj_image_weight)
+            self.query_proj.image.weight_var = nn.Parameter(original_query_proj_image_weight_var)
+            self.query_proj.image.bias = nn.Parameter(original_query_proj_image_bias)
+            self.query_proj.image.bias_var = nn.Parameter(original_query_proj_image_bias_var)
+            self.key_proj.text.weight = nn.Parameter(original_key_proj_text_weight)
+            self.key_proj.text.weight_var = nn.Parameter(original_key_proj_text_weight_var)
+            self.key_proj.text.bias = nn.Parameter(original_key_proj_text_bias)
+            self.key_proj.text.bias_var = nn.Parameter(original_key_proj_text_bias_var)
+            self.key_proj.image.weight = nn.Parameter(original_key_proj_image_weight)
+            self.key_proj.image.weight_var = nn.Parameter(original_key_proj_image_weight_var)
+            self.key_proj.image.bias = nn.Parameter(original_key_proj_image_bias)
+            self.key_proj.image.bias_var = nn.Parameter(original_key_proj_image_bias_var)
+
+            # continue with previous code for Softmax / Values
+            value = (
+                self.value_proj(value, split_position=multiway_split_position)
+                .view(batch_size, src_len, self.num_heads, self.head_dim)
+                .transpose(1, 2)
+            )
+            
+            value = value.reshape(batch_size * self.num_heads, src_len, self.head_dim)
+
+        if q_mat is not None:
+            query = q_mat(query)
+        if k_mat is not None:
+            key = k_mat(key)
+        if v_mat is not None:
+            value = v_mat(value)
+        if q_dot_k is not None:
+            fully_flattened = q_dot_k(attn_weights[0])
 
         if image_text_attention_mask is not None:
             image_text_attention_mask = image_text_attention_mask.unsqueeze(0)
@@ -337,7 +470,7 @@ class Beit3MultiheadAttention(nn.Module):
             attn_weights = attn_weights.view(batch_size, self.num_heads, target_length, src_len)
             attn_weights = attn_weights.masked_fill(
                 attention_mask.unsqueeze(1).unsqueeze(2).to(torch.bool),
-                float("-inf"),
+                float("-1e8"),
             )
             attn_weights = attn_weights.view(batch_size * self.num_heads, target_length, src_len)
 
@@ -372,6 +505,11 @@ class Beit3EncoderLayer(nn.Module):
         self.final_layer_norm = Beit3LayerNorm(config)
         self.alpha = 1.0
 
+        self.q_mat = nn.Identity()
+        self.k_mat = nn.Identity()
+        self.v_mat = nn.Identity()
+        self.q_dot_k = nn.Identity()
+
     def forward(
         self,
         hidden_states,
@@ -396,6 +534,10 @@ class Beit3EncoderLayer(nn.Module):
             past_key_values=past_key_values,
             multiway_split_position=split_position,
             output_attentions=output_attentions,
+            q_mat=self.q_mat,
+            k_mat=self.k_mat,
+            v_mat=self.v_mat,
+            q_dot_k=self.q_dot_k,
         )
 
         attention_weights = None
