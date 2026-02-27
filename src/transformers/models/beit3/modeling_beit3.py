@@ -282,7 +282,7 @@ class Beit3MultiheadAttention(nn.Module):
         self.inner_attn_ln = Beit3LayerNorm(config) if config.sub_layernorm else None
         self.dropout_module = nn.Dropout(config.attention_dropout)
 
-        self.use_attn_sampling = True
+        self.use_attn_sampling = False
         self.attn_sample_number = 64
 
     def forward(
