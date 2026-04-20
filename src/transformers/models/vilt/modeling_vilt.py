@@ -129,16 +129,19 @@ class ViltEmbeddings(nn.Module):
         patch_index = patch_index.flatten(1, 3)
         x_mask = x_mask.flatten(1)
 
+        # Fixed target for static compilation: always pad/select to exactly this many image patches.
+        # config.max_image_length may be -1 (unconstrained), so we hardcode the cap here.
+        # 256 covers the validation-set maximum (19×12 = 228 patches for a 608×384 image after
+        # shortest_edge=384 resize) with a small margin.
+        target_patches = 256
+
+        effective_resolution = x_h * x_w
         if max_image_length < 0 or max_image_length is None or not isinstance(max_image_length, int):
-            # suppose aug is 800 x 1333, then, maximum effective res is 800 x 1333 (if one side gets bigger, the other will be constrained and be shrunk)
-            # (800 // self.patch_size) * (1333 // self.patch_size) is the maximum number of patches that single image can get.
-            # if self.patch_size = 32, 25 * 41 = 1025
-            # if res is 384 x 640, 12 * 20 = 240
-            effective_resolution = x_h * x_w
             max_image_length = effective_resolution.max()
         else:
-            effective_resolution = x_h * x_w
             max_image_length = min(effective_resolution.max(), max_image_length)
+        # Always cap selection to target_patches so outer padding reaches exactly target_patches+1 tokens.
+        max_image_length = min(max_image_length, target_patches)
 
         valid_idx = x_mask.nonzero(as_tuple=False)
         non_valid_idx = (1 - x_mask).nonzero(as_tuple=False)
@@ -191,6 +194,14 @@ class ViltEmbeddings(nn.Module):
         x = self.dropout(x)
 
         x_mask = torch.cat([torch.ones(x_mask.shape[0], 1).to(x_mask), x_mask], dim=1)
+
+        # Pad to exactly target_patches image tokens so sequence length is constant across batches.
+        # Appended tokens are zeros (dummy) and masked out (mask=0).
+        n_patches = x.shape[1] - 1  # excludes CLS
+        pad_len = target_patches - n_patches
+        if pad_len > 0:
+            x = torch.cat([x, x.new_zeros(batch_size, pad_len, num_channels)], dim=1)
+            x_mask = torch.cat([x_mask, x_mask.new_zeros(batch_size, pad_len)], dim=1)
 
         return x, x_mask, (patch_index, (height, width))
 
@@ -343,7 +354,7 @@ class ViltSelfAttention(nn.Module):
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
-    def forward(self, hidden_states, attention_mask=None, head_mask=None, output_attentions=False, q_dot_k=None, q_mat=None, k_mat=None, v_mat=None):
+    def forward(self, hidden_states, attention_mask=None, head_mask=None, output_attentions=False):
         batch_size, seq_length, _ = hidden_states.shape
         query_layer = (
             self.query(hidden_states)
@@ -363,26 +374,8 @@ class ViltSelfAttention(nn.Module):
 
         key_layer = key_layer.transpose(-1, -2)
 
-        
-        if q_mat is not None:
-            query_layer = q_mat(query_layer)
-        if k_mat is not None:
-            key_layer = k_mat(key_layer)
-        if v_mat is not None:
-            value_layer = v_mat(value_layer)
-        
-
         # Take the dot product between "query" and "key" to get the raw attention scores.
         attention_scores = torch.matmul(query_layer, key_layer)
-
-        #import ipdb; ipdb.set_trace()
-
-        batch_size, num_heads, seq_len, _ = attention_scores.shape
-        mask = ~torch.eye(seq_len, dtype=torch.bool, device=attention_scores.device)
-        fully_flattened = attention_scores[:, :, mask].flatten(start_dim=1)
-
-        if q_dot_k is not None:
-            fully_flattened = q_dot_k(attention_scores[0][0])
 
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
         if attention_mask is not None:
@@ -454,8 +447,8 @@ class ViltAttention(nn.Module):
         self.attention.all_head_size = self.attention.attention_head_size * self.attention.num_attention_heads
         self.pruned_heads = self.pruned_heads.union(heads)
 
-    def forward(self, hidden_states, attention_mask=None, head_mask=None, output_attentions=False, q_dot_k=None, q_mat=None, k_mat=None, v_mat=None):
-        self_outputs = self.attention(hidden_states, attention_mask, head_mask, output_attentions, q_dot_k=q_dot_k, q_mat=q_mat, k_mat=k_mat, v_mat=v_mat)
+    def forward(self, hidden_states, attention_mask=None, head_mask=None, output_attentions=False):
+        self_outputs = self.attention(hidden_states, attention_mask, head_mask, output_attentions)
 
         attention_output = self.output(self_outputs[0], hidden_states)
 
@@ -506,21 +499,12 @@ class ViltLayer(GradientCheckpointingLayer):
         self.layernorm_before = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.layernorm_after = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
-        self.q_dot_k = nn.Identity()
-        self.q_mat = nn.Identity()
-        self.k_mat = nn.Identity()
-        self.v_mat = nn.Identity()
-
     def forward(self, hidden_states, attention_mask=None, head_mask=None, output_attentions=False):
         self_attention_outputs = self.attention(
             self.layernorm_before(hidden_states),  # in ViLT, layernorm is applied before self-attention
             attention_mask,
             head_mask,
             output_attentions=output_attentions,
-            q_dot_k=self.q_dot_k,
-            q_mat=self.q_mat,
-            k_mat=self.k_mat,
-            v_mat=self.v_mat,
         )
         attention_output = self_attention_outputs[0]
         outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
